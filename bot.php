@@ -484,6 +484,15 @@ function clearUserState(int $userId): void {
 }
 
 function getUserState(int $userId): ?array {
+    // Ensure table exists defensively (covers older DBs without user_states)
+    db()->exec('CREATE TABLE IF NOT EXISTS user_states (
+      user_id INT UNSIGNED PRIMARY KEY,
+      state VARCHAR(64) NOT NULL,
+      meta JSON NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_us_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
     $stmt = db()->prepare('SELECT state, meta FROM user_states WHERE user_id = ?');
     $stmt->execute([$userId]);
     $row = $stmt->fetch();
