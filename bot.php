@@ -611,8 +611,14 @@ function handleCountryCallback(array $user, string $action, int $countryId, arra
                 return;
             }
             // Assign to user
-            $u = $pdo->prepare('UPDATE users SET country_id = ? WHERE id = ?');
-            $u->execute([$countryId, $user['id']]);
+            // Starter pack
+            $c = $pdo->prepare('SELECT starter_money, starter_points FROM countries WHERE id = ?');
+            $c->execute([$countryId]);
+            $cinfo = $c->fetch();
+            $starterMoney = (int)($cinfo['starter_money'] ?? 0);
+            $starterPoints = (int)($cinfo['starter_points'] ?? 0);
+            $u = $pdo->prepare('UPDATE users SET country_id = ?, money = money + ?, points = points + ? WHERE id = ?');
+            $u->execute([$countryId, $starterMoney, $starterPoints, $user['id']]);
             commit($pdo);
         } catch (Throwable $e) {
             rollback($pdo);
@@ -1131,6 +1137,77 @@ function contactAdmin(array $user): void {
 }
 
 // ===============================
+// ADMIN IN-CHAT PANEL (INLINE)
+// ===============================
+function adminShowHome(array $user, ?int $messageId = null): void {
+    $kb = [
+        [ ['text' => '📦 بسته‌های امتیاز', 'callback_data' => 'ADMIN|PPKGS'], ['text' => '🧾 خریدهای امتیاز', 'callback_data' => 'ADMIN|PP'] ],
+        [ ['text' => '🌍 کشورها', 'callback_data' => 'ADMIN|COUNTRIES'], ['text' => '🛍️ فروشگاه', 'callback_data' => 'ADMIN|SHOP'] ],
+        [ ['text' => '🏭 کارخانه‌ها', 'callback_data' => 'ADMIN|FACTORIES'], ['text' => '📝 ارسالی‌ها', 'callback_data' => 'ADMIN|SUBMISSIONS'] ],
+        [ ['text' => '🔄 انتقال‌ها', 'callback_data' => 'ADMIN|TRANSFERS'], ['text' => '❓ سوالات', 'callback_data' => 'ADMIN|QUESTIONS'] ],
+        [ ['text' => '📣 Broadcast', 'callback_data' => 'ADMIN|BROADCAST'] ],
+    ];
+    $text = "پنل مدیریت";
+    if ($messageId) {
+        editMessageText($user['telegram_id'], $messageId, $text, ['reply_markup' => ['inline_keyboard' => $kb]]);
+    } else {
+        sendMessage($user['telegram_id'], $text, ['reply_markup' => ['inline_keyboard' => $kb]]);
+    }
+}
+
+function adminListPointPackages(array $user, ?int $messageId = null): void {
+    $rows = db()->query('SELECT id,name,points,price_toman,is_active FROM point_packages ORDER BY sort_order,id')->fetchAll();
+    $lines = [];
+    foreach ($rows as $r) { $lines[] = ($r['is_active']?'✅':'⛔️') . ' ' . $r['id'] . ' - ' . $r['name'] . ' (' . (int)$r['points'] . ')'; }
+    $text = "بسته‌های امتیاز:\n" . ( $lines ? implode("\n", $lines) : '—' );
+    $kb = [
+        [ ['text' => '➕ افزودن بسته', 'callback_data' => 'ADMIN|PPKGS_ADD'] ],
+        [ ['text' => '⬅️ بازگشت', 'callback_data' => 'ADMIN|HOME'] ],
+    ];
+    if ($messageId) editMessageText($user['telegram_id'], $messageId, $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    else sendMessage($user['telegram_id'], $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+}
+
+function adminListPointPurchases(array $user, ?int $messageId = null): void {
+    $rows = db()->query('SELECT pp.id,pp.code,pp.photo_file_id,u.telegram_id,u.username,c.name AS country FROM point_purchases pp JOIN users u ON u.id=pp.user_id LEFT JOIN countries c ON c.id=u.country_id WHERE pp.status="pending" ORDER BY pp.created_at ASC LIMIT 5')->fetchAll();
+    if (!$rows) {
+        $kb = [ [ ['text' => '⬅️ بازگشت', 'callback_data' => 'ADMIN|HOME'] ] ];
+        if ($messageId) editMessageText($user['telegram_id'], $messageId, 'درخواستی موجود نیست.', ['reply_markup'=>['inline_keyboard'=>$kb]]);
+        else sendMessage($user['telegram_id'], 'درخواستی موجود نیست.', ['reply_markup'=>['inline_keyboard'=>$kb]]);
+        return;
+    }
+    foreach ($rows as $r) {
+        $caption = 'کد: ' . $r['code'] . "\n" . 'کاربر: ' . $r['telegram_id'] . ' (@' . ($r['username']?:'-') . ')' . "\n" . 'کشور: ' . ($r['country']?:'-');
+        $kb = [ [ ['text'=>'✅ تایید','callback_data'=>'ADMIN|PP|APPROVE|'.$r['id']], ['text'=>'❌ رد','callback_data'=>'ADMIN|PP|REJECT|'.$r['id']] ], [ ['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME'] ] ];
+        if ($r['photo_file_id']) sendPhoto($user['telegram_id'], $r['photo_file_id'], ['caption'=>$caption, 'reply_markup'=>['inline_keyboard'=>$kb]]);
+        else sendMessage($user['telegram_id'], $caption, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    }
+}
+
+function countrySettingsGet(int $countryId): array {
+    $stmt = db()->prepare('SELECT settings FROM countries WHERE id = ?');
+    $stmt->execute([$countryId]);
+    $json = (string)($stmt->fetchColumn() ?: '');
+    $arr = $json ? json_decode($json, true) : [];
+    if (!is_array($arr)) $arr = [];
+    $arr += [ 'allow_factory_purchase' => true, 'allow_shop_normal' => true, 'allow_shop_vip' => true ];
+    return $arr;
+}
+
+function countrySettingsSave(int $countryId, array $settings): void {
+    db()->prepare('UPDATE countries SET settings = ? WHERE id = ?')->execute([json_encode($settings, JSON_UNESCAPED_UNICODE), $countryId]);
+}
+
+function adminListCountries(array $user, ?int $messageId = null): void {
+    $rows = db()->query('SELECT id,name,type,starter_money,starter_points FROM countries ORDER BY name')->fetchAll();
+    $lines = [];
+    foreach ($rows as $r) { $lines[] = $r['id'] . ' - ' . $r['name'] . ' (' . $r['type'] . ') SM:' . (int)$r['starter_money'] . ' SP:' . (int)$r['starter_points']; }
+    $text = 'کشورها:\n' . ( $lines ? implode("\n", $lines) : '—' );
+    $kb = [ [ ['text'=>'➕ افزودن کشور','callback_data'=>'ADMIN|COUNTRY_ADD'] ], [ ['text'=>'🛠 تنظیمات کشور','callback_data'=>'ADMIN|COUNTRY_CFG_PROMPT'] ], [ ['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME'] ] ];
+    if ($messageId) editMessageText($user['telegram_id'], $messageId, $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    else sendMessage($user['telegram_id'], $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+}
+// ===============================
 // ADMIN PANEL (SINGLE-FILE, VIA GET action=...)
 // ===============================
 function panel_h(string $s): string { return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
@@ -1635,19 +1712,8 @@ function handleMessage(array $message): void {
     }
 
     if ($text === '/panel') {
-        // Only admins can receive panel link
-        if (!isAdmin($user)) {
-            sendMessage($user['telegram_id'], 'دسترسی به پنل مدیریت ندارید.');
-            return;
-        }
-        // Generate one-time token valid for 10 minutes
-        $token = bin2hex(random_bytes(32));
-        db()->prepare('INSERT INTO panel_tokens (token, user_id, created_at, expires_at) VALUES (?,?,?,?)')
-            ->execute([$token, $user['id'], now(), date('Y-m-d H:i:s', time() + 600)]);
-        $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'your-domain.com');
-        $url = $base . '/panel.php?action=login&token=' . urlencode($token);
-        sendMessage($user['telegram_id'], 'ورود یکبار مصرف به پنل مدیریت:
-<a href="' . htmlspecialchars($url) . '">باز کردن پنل</a>');
+        if (!isAdmin($user)) { sendMessage($user['telegram_id'], 'دسترسی به پنل مدیریت ندارید.'); return; }
+        adminShowHome($user);
         return;
     }
 
@@ -1710,6 +1776,31 @@ function handleCallbackQuery(array $cb): void {
 
     try {
         switch ($action) {
+            case 'ADMIN':
+                if (!isAdmin($user)) { answerCallback($cb['id'], ''); return; }
+                $sub = (string)($parts[1] ?? '');
+                if ($sub === 'HOME' || $sub === '') {
+                    adminShowHome($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'PPKGS') {
+                    adminListPointPackages($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'PP') {
+                    adminListPointPurchases($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'PP' && ($parts[2] ?? '') === 'APPROVE') { answerCallback($cb['id'], ''); break; }
+                if ($sub === 'PP' && ($parts[2] ?? '') === 'REJECT') { answerCallback($cb['id'], ''); break; }
+                // Countries list placeholder
+                if ($sub === 'COUNTRIES') { adminListCountries($user, $cb['message']['message_id'] ?? null); answerCallback($cb['id'], ''); break; }
+                // Not implemented actions fallback
+                answerCallback($cb['id'], '');
+                break;
             case 'NOOP':
                 answerCallback($cb['id'], '');
                 break;
