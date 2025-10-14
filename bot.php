@@ -32,6 +32,9 @@ const ADMIN_USERNAME = 'ADMIN_USERNAME'; // without @
 // Group chat ID for Q&A (negative for supergroups)
 const GROUP_CHAT_ID = -1001234567890; // e.g., -100xxxxxxxxxx
 
+// Optional log channel/chat for purchase logs (0 = disabled)
+const LOG_CHANNEL_ID = 0; // e.g., -1009876543210 to enable
+
 // Maintenance mode (true = users see maintenance message; admin bypasses)
 const MAINTENANCE = false;
 
@@ -285,7 +288,85 @@ function ensureSchema(): void {
       (1,1,'جاسوس',0,500,NULL,'force',NULL,NULL,1),
       (2,2,'مجوز کارخانه فولاد',0,1000,NULL,'factory',1,NULL,1),
       (3,3,'VIP سپر امنیتی',1,NULL,150000,'force',NULL,NULL,1)");
-    $pdo->exec("INSERT IGNORE INTO point_packages (id,name,points,price_toman,sort_order) VALUES (1,'۱٬۰۰۰ امتیاز',1000,50000,1)");
+
+    // Schema extensions for new features (idempotent)
+    try { $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS money BIGINT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE items ADD COLUMN IF NOT EXISTS price_money BIGINT UNSIGNED NULL"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE items ADD COLUMN IF NOT EXISTS per_user_limit INT UNSIGNED NULL"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE items ADD COLUMN IF NOT EXISTS per_user_daily_limit INT UNSIGNED NULL"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE items ADD COLUMN IF NOT EXISTS pack_size INT UNSIGNED NOT NULL DEFAULT 1"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE countries ADD COLUMN IF NOT EXISTS starter_money BIGINT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE countries ADD COLUMN IF NOT EXISTS starter_points BIGINT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE countries ADD COLUMN IF NOT EXISTS settings JSON NULL"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE factory_types ADD COLUMN IF NOT EXISTS base_price INT UNSIGNED NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE factory_types ADD COLUMN IF NOT EXISTS price_currency ENUM('money','points') NOT NULL DEFAULT 'money'"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE factory_types ADD COLUMN IF NOT EXISTS base_income INT UNSIGNED NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE factory_types ADD COLUMN IF NOT EXISTS income_currency ENUM('money','points') NOT NULL DEFAULT 'money'"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE factory_types ADD COLUMN IF NOT EXISTS payout_interval_hours INT UNSIGNED NOT NULL DEFAULT 24"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE factory_types ADD COLUMN IF NOT EXISTS upgrade_base_minutes INT UNSIGNED NOT NULL DEFAULT 60"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS amount_money BIGINT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+
+    // Country-item blocks
+    $pdo->exec("CREATE TABLE IF NOT EXISTS country_item_blocks (
+      country_id INT UNSIGNED NOT NULL,
+      item_id INT UNSIGNED NOT NULL,
+      blocked TINYINT(1) NOT NULL DEFAULT 1,
+      PRIMARY KEY (country_id, item_id),
+      CONSTRAINT fk_cib_country FOREIGN KEY (country_id) REFERENCES countries(id) ON DELETE CASCADE,
+      CONSTRAINT fk_cib_item FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Item purchases log (for per-day limits)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS item_purchases (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id INT UNSIGNED NOT NULL,
+      item_id INT UNSIGNED NOT NULL,
+      quantity INT UNSIGNED NOT NULL DEFAULT 1,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_ip_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_ip_item FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+      INDEX idx_ip_user_day (user_id, item_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Point purchases (receipts)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS point_purchases (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id INT UNSIGNED NOT NULL,
+      package_id INT UNSIGNED NOT NULL,
+      code VARCHAR(32) NOT NULL,
+      status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+      photo_file_id VARCHAR(255) NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      decided_at DATETIME NULL,
+      decided_by INT UNSIGNED NULL,
+      CONSTRAINT fk_pp_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_pp_pkg FOREIGN KEY (package_id) REFERENCES point_packages(id) ON DELETE RESTRICT,
+      UNIQUE KEY uniq_pp_code (code),
+      INDEX idx_pp_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Missions
+    $pdo->exec("CREATE TABLE IF NOT EXISTS missions (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(150) NOT NULL,
+      type ENUM('buy_shop') NOT NULL,
+      shop_type ENUM('normal','vip') NULL,
+      required_count INT UNSIGNED NOT NULL,
+      reward_type ENUM('money','points') NOT NULL,
+      reward_amount INT UNSIGNED NOT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS user_missions (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      mission_id INT UNSIGNED NOT NULL,
+      user_id INT UNSIGNED NOT NULL,
+      progress_count INT UNSIGNED NOT NULL DEFAULT 0,
+      claimed_at DATETIME NULL,
+      UNIQUE KEY uniq_um (mission_id, user_id),
+      CONSTRAINT fk_um_m FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+      CONSTRAINT fk_um_u FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 }
 
 function tg(string $method, array $params = []): array {
@@ -310,7 +391,7 @@ function tg(string $method, array $params = []): array {
     return is_array($data) ? $data : ['ok' => false, 'description' => 'Invalid JSON'];
 }
 
-function sendMessage(int|string $chatId, string $text, array $extra = []): void {
+function sendMessage($chatId, string $text, array $extra = []): void {
     $params = array_merge([
         'chat_id' => $chatId,
         'text' => $text,
@@ -320,7 +401,7 @@ function sendMessage(int|string $chatId, string $text, array $extra = []): void 
     tg('sendMessage', $params);
 }
 
-function sendPhoto(int|string $chatId, string $fileIdOrUrl, array $extra = []): void {
+function sendPhoto($chatId, string $fileIdOrUrl, array $extra = []): void {
     $params = array_merge([
         'chat_id' => $chatId,
         'photo' => $fileIdOrUrl,
@@ -337,7 +418,7 @@ function answerCallback(string $callbackId, string $text, bool $alert = false): 
     ]);
 }
 
-function editMessageText(int|string $chatId, int $messageId, string $text, array $extra = []): void {
+function editMessageText($chatId, int $messageId, string $text, array $extra = []): void {
     $params = array_merge([
         'chat_id' => $chatId,
         'message_id' => $messageId,
@@ -348,7 +429,7 @@ function editMessageText(int|string $chatId, int $messageId, string $text, array
     tg('editMessageText', $params);
 }
 
-function deleteMessage(int|string $chatId, int $messageId): void {
+function deleteMessage($chatId, int $messageId): void {
     tg('deleteMessage', [
         'chat_id' => $chatId,
         'message_id' => $messageId,
@@ -380,6 +461,15 @@ function getSetting(string $key, ?string $default = null): ?string {
     $stmt->execute([$key]);
     $val = $stmt->fetchColumn();
     return $val !== false ? (string)$val : $default;
+}
+
+function logToChannel(string $text, ?string $photoFileId = null): void {
+    if (!defined('LOG_CHANNEL_ID') || LOG_CHANNEL_ID === 0) return;
+    if ($photoFileId) {
+        sendPhoto(LOG_CHANNEL_ID, $photoFileId, ['caption' => $text]);
+    } else {
+        sendMessage(LOG_CHANNEL_ID, $text);
+    }
 }
 
 // ===============================
@@ -773,11 +863,12 @@ function listShopItems(array $user, string $shopType, int $categoryId): void {
         $name = $it['name'];
         $desc = $it['description'] ?: '';
         $isVip = (int)$it['is_vip'] === 1 || $shopType === 'vip';
-        $priceTxt = $isVip ? ((int)$it['price_toman'] . ' تومان') : ((int)$it['price_points'] . ' امتیاز');
+        // Normal shop uses game money; VIP uses points
+        $priceTxt = $isVip ? ((int)$it['price_points'] . ' امتیاز') : ((int)($it['price_money'] ?? 0) . ' پول بازی');
         $text = '<b>' . htmlspecialchars($name) . '</b>\n' . htmlspecialchars($desc) . "\nقیمت: <b>{$priceTxt}</b>";
         if ($isVip) {
-            $cb = 'VIP_BUY|' . $it['id'];
-            $btn = [ ['text' => '🛒 خرید VIP', 'callback_data' => $cb] ];
+            $cb = 'BUY_VIP_ITEM|' . $it['id'];
+            $btn = [ ['text' => '🛒 خرید با امتیاز VIP', 'callback_data' => $cb] ];
         } else {
             $cb = 'BUY_ITEM|' . $it['id'];
             $btn = [ ['text' => '🛒 خرید', 'callback_data' => $cb] ];
@@ -794,16 +885,16 @@ function handleBuyItem(array $user, int $itemId, array $cb): void {
     if (!$it) { answerCallback($cb['id'], 'آیتم یافت نشد.'); return; }
     $isVip = (int)$it['is_vip'] === 1 || $it['shop_type'] === 'vip';
     if ($isVip) { answerCallback($cb['id'], 'این آیتم VIP است.'); return; }
-    $price = (int)$it['price_points'];
+    $price = (int)($it['price_money'] ?? 0);
     try {
         tx($pdo);
         $u = $pdo->prepare('SELECT * FROM users WHERE id = ? FOR UPDATE');
         $u->execute([$user['id']]);
         $usr = $u->fetch();
-        if ((int)$usr['points'] < $price) { rollback($pdo); answerCallback($cb['id'], 'امتیاز کافی نیست.'); return; }
-        $pdo->prepare('UPDATE users SET points = points - ? WHERE id = ?')->execute([$price, $user['id']]);
-        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
-            ->execute([$user['id'], 'spend', -$price, 'Buy item: ' . $it['name'], now()]);
+        if ((int)$usr['money'] < $price) { rollback($pdo); answerCallback($cb['id'], 'پول بازی کافی نیست.'); return; }
+        $pdo->prepare('UPDATE users SET money = money - ? WHERE id = ?')->execute([$price, $user['id']]);
+        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, amount_money, description, created_at) VALUES (?,?,?,?,?,?)')
+            ->execute([$user['id'], 'spend', 0, -$price, 'Buy item: ' . $it['name'], now()]);
         if ($it['grant_type'] === 'points' && (int)$it['grant_points'] > 0) {
             $gain = (int)$it['grant_points'];
             $pdo->prepare('UPDATE users SET points = points + ? WHERE id = ?')->execute([$gain, $user['id']]);
@@ -819,13 +910,73 @@ function handleBuyItem(array $user, int $itemId, array $cb): void {
             }
         } else {
             // force or other => add to user_items
-            $pdo->prepare('INSERT INTO user_items (user_id, item_id, quantity, created_at) VALUES (?,?,1,?)')
-                ->execute([$user['id'], $itemId, now()]);
+            $pack = max(1, (int)($it['pack_size'] ?? 1));
+            $exists = $pdo->prepare('SELECT id, quantity FROM user_items WHERE user_id = ? AND item_id = ?');
+            $exists->execute([$user['id'], $itemId]);
+            $row = $exists->fetch();
+            if ($row) {
+                $pdo->prepare('UPDATE user_items SET quantity = quantity + ? WHERE id = ?')->execute([$pack, $row['id']]);
+            } else {
+                $pdo->prepare('INSERT INTO user_items (user_id, item_id, quantity, created_at) VALUES (?,?,?,?)')
+                    ->execute([$user['id'], $itemId, $pack, now()]);
+            }
         }
+        // Log purchase for daily limits
+        $pdo->prepare('INSERT INTO item_purchases (user_id, item_id, quantity, created_at) VALUES (?,?,?,?)')
+            ->execute([$user['id'], $itemId, max(1, (int)($it['pack_size'] ?? 1)), now()]);
         commit($pdo);
     } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); return; }
     answerCallback($cb['id'], 'خرید موفق بود.');
     sendMessage($user['telegram_id'], '✅ آیتم با موفقیت خریداری شد.');
+}
+
+function handleBuyVipItem(array $user, int $itemId, array $cb): void {
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT i.*, c.type AS shop_type FROM items i JOIN shop_categories c ON c.id = i.category_id WHERE i.id = ? AND i.is_active = 1');
+    $stmt->execute([$itemId]);
+    $it = $stmt->fetch();
+    if (!$it) { answerCallback($cb['id'], 'آیتم یافت نشد.'); return; }
+    $isVip = (int)$it['is_vip'] === 1 || $it['shop_type'] === 'vip';
+    if (!$isVip) { answerCallback($cb['id'], 'این آیتم VIP نیست.'); return; }
+    $price = (int)($it['price_points'] ?? 0);
+    try {
+        tx($pdo);
+        $u = $pdo->prepare('SELECT * FROM users WHERE id = ? FOR UPDATE');
+        $u->execute([$user['id']]);
+        $usr = $u->fetch();
+        if ((int)$usr['points'] < $price) { rollback($pdo); answerCallback($cb['id'], 'امتیاز کافی نیست.'); return; }
+        $pdo->prepare('UPDATE users SET points = points - ? WHERE id = ?')->execute([$price, $user['id']]);
+        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
+            ->execute([$user['id'], 'spend', -$price, 'Buy VIP item: ' . $it['name'], now()]);
+        // grant
+        if ($it['grant_type'] === 'points' && (int)$it['grant_points'] > 0) {
+            $gain = (int)$it['grant_points'];
+            $pdo->prepare('UPDATE users SET points = points + ? WHERE id = ?')->execute([$gain, $user['id']]);
+            $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
+                ->execute([$user['id'], 'earn', $gain, 'VIP item grant points: ' . $it['name'], now()]);
+        } elseif ($it['grant_type'] === 'factory' && $it['grant_factory_type_id']) {
+            $exists = $pdo->prepare('SELECT id FROM user_factories WHERE user_id = ? AND factory_type_id = ?');
+            $exists->execute([$user['id'], $it['grant_factory_type_id']]);
+            if (!$exists->fetch()) {
+                $pdo->prepare('INSERT INTO user_factories (user_id, factory_type_id, level, created_at) VALUES (?,?,1,?)')
+                    ->execute([$user['id'], $it['grant_factory_type_id'], now()]);
+            }
+        } else {
+            $pack = max(1, (int)($it['pack_size'] ?? 1));
+            $exists = $pdo->prepare('SELECT id, quantity FROM user_items WHERE user_id = ? AND item_id = ?');
+            $exists->execute([$user['id'], $itemId]);
+            $row = $exists->fetch();
+            if ($row) {
+                $pdo->prepare('UPDATE user_items SET quantity = quantity + ? WHERE id = ?')->execute([$pack, $row['id']]);
+            } else {
+                $pdo->prepare('INSERT INTO user_items (user_id, item_id, quantity, created_at) VALUES (?,?,?,?)')
+                    ->execute([$user['id'], $itemId, $pack, now()]);
+            }
+        }
+        commit($pdo);
+    } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); return; }
+    answerCallback($cb['id'], 'خرید VIP موفق بود.');
+    sendMessage($user['telegram_id'], '✅ آیتم VIP با موفقیت خریداری شد.');
 }
 
 function handleVipBuy(array $user, ?int $itemId, ?int $pkgId, array $cb): void {
@@ -918,12 +1069,27 @@ function handleTransferTarget(array $user, string $text): void {
 function listPointPackages(array $user): void {
     $stmt = db()->query('SELECT id, name, points, price_toman FROM point_packages WHERE is_active = 1 ORDER BY sort_order, id');
     $rows = $stmt->fetchAll();
-    if (!$rows) { sendMessage($user['telegram_id'], 'بسته‌ای موجود نیست.'); return; }
+    if (!$rows) { sendMessage($user['telegram_id'], 'فعلاً بسته‌ای تعریف نشده است.'); return; }
     foreach ($rows as $r) {
         $text = '<b>' . htmlspecialchars($r['name']) . '</b> - ' . (int)$r['points'] . ' امتیاز\n' . 'قیمت: <b>' . (int)$r['price_toman'] . '</b> تومان';
-        $btn = [ ['text' => '🛒 خرید VIP', 'callback_data' => 'VIP_BUY_POINTS|' . $r['id']] ];
+        $btn = [ ['text' => '🧾 خرید و ارسال رسید', 'callback_data' => 'BUY_POINTS|' . $r['id']] ];
         sendMessage($user['telegram_id'], $text, [ 'reply_markup' => ['inline_keyboard' => [ $btn ] ] ]);
     }
+}
+
+function startPointsPurchase(array $user, int $packageId, array $cb): void {
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT id, name, points, price_toman FROM point_packages WHERE id = ? AND is_active = 1');
+    $stmt->execute([$packageId]);
+    $pkg = $stmt->fetch();
+    if (!$pkg) { answerCallback($cb['id'], 'بسته یافت نشد.'); return; }
+    $code = strtoupper(bin2hex(random_bytes(4)));
+    $pdo->prepare('INSERT INTO point_purchases (user_id, package_id, code, status, created_at) VALUES (?,?,?,?,?)')
+        ->execute([$user['id'], $pkg['id'], $code, 'pending', now()]);
+    answerCallback($cb['id'], 'کد خرید صادر شد.');
+    sendMessage($user['telegram_id'], 'کد خرید شما: <b>'.$code.'</b>
+لطفاً عکس رسید پرداخت را ارسال کنید.', []);
+    setUserState((int)$user['id'], 'await_points_receipt', ['purchase_code' => $code, 'package_id' => (int)$pkg['id']]);
 }
 
 // ===============================
@@ -989,6 +1155,7 @@ function panel_nav(): void {
     echo '<a href="'.$base.'?action=submissions" style="color:#fff">ارسالی‌ها</a>';
     echo '<a href="'.$base.'?action=transfers" style="color:#fff">انتقالات</a>';
     echo '<a href="'.$base.'?action=shop" style="color:#fff">فروشگاه</a>';
+    echo '<a href="'.$base.'?action=point_purchases" style="color:#fff">خرید امتیاز</a>';
     echo '<a href="'.$base.'?action=factories" style="color:#fff">کارخانه‌ها</a>';
     echo '<a href="'.$base.'?action=countries" style="color:#fff">کشورها</a>';
     echo '<a href="'.$base.'?action=questions" style="color:#fff">سوالات</a>';
@@ -1100,6 +1267,57 @@ function serveAdminPanel(): void {
             if ($r['photo_file_id']) echo '<div>Photo File ID: <code>'.panel_h($r['photo_file_id']).'</code></div>';
             echo '<form method="post" style="display:flex;gap:8px"><input type="hidden" name="id" value="'.$r['id'].'" />';
             echo '<button name="op" value="approve">✅ تایید</button>';
+            echo '<button name="op" value="reject">❌ رد</button>';
+            echo '</form></div>';
+        }
+        echo '</div></body></html>';
+        return;
+    }
+
+    // Points purchases moderation
+    if ($action === 'point_purchases') {
+        $pdo = db();
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $id = (int)($_POST['id'] ?? 0);
+            $op = (string)($_POST['op'] ?? '');
+            if ($id > 0 && in_array($op, ['approve','reject'], true)) {
+                $pp = $pdo->prepare('SELECT pp.*, u.telegram_id, u.id AS uid FROM point_purchases pp JOIN users u ON u.id=pp.user_id WHERE pp.id = ? AND pp.status = "pending"');
+                $pp->execute([$id]);
+                $row = $pp->fetch();
+                if ($row) {
+                    if ($op === 'approve') {
+                        $pkg = $pdo->prepare('SELECT points FROM point_packages WHERE id = ?');
+                        $pkg->execute([$row['package_id']]);
+                        $points = (int)($pkg->fetchColumn() ?: 0);
+                        $pdo->beginTransaction();
+                        try {
+                            $pdo->prepare('UPDATE users SET points = points + ? WHERE id = ?')->execute([$points, $row['uid']]);
+                            $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
+                                ->execute([$row['uid'], 'earn', $points, 'Points purchase code '.$row['code'], now()]);
+                            $pdo->prepare('UPDATE point_purchases SET status = "approved", decided_at = ?, decided_by = ? WHERE id = ?')
+                                ->execute([now(), $_SESSION['admin_user_id'], $id]);
+                            $pdo->commit();
+                        } catch (Throwable $e) { $pdo->rollBack(); }
+                        sendMessage($row['telegram_id'], '✅ خرید امتیاز تایید شد. کد: '.$row['code']);
+                    } else {
+                        $pdo->prepare('UPDATE point_purchases SET status = "rejected", decided_at = ?, decided_by = ? WHERE id = ?')
+                            ->execute([now(), $_SESSION['admin_user_id'], $id]);
+                        sendMessage($row['telegram_id'], '❌ خرید امتیاز رد شد. کد: '.$row['code']);
+                    }
+                }
+            }
+        }
+        $rows = $pdo->query('SELECT pp.*, u.telegram_id, u.username, c.name AS country FROM point_purchases pp JOIN users u ON u.id=pp.user_id LEFT JOIN countries c ON c.id=u.country_id WHERE pp.status = "pending" ORDER BY pp.created_at ASC LIMIT 50')->fetchAll();
+        echo '<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>خرید امتیاز</title></head><body style="font-family:sans-serif">';
+        panel_nav();
+        echo '<div style="padding:16px"><h3>درخواست‌های خرید امتیاز</h3>';
+        if (!$rows) echo '<div>موردی نیست.</div>';
+        foreach ($rows as $r) {
+            echo '<div style="border:1px solid #ddd;border-radius:8px;padding:12px;margin:8px 0">';
+            echo 'بازیکن: '.$r['telegram_id'].' (@'.panel_h((string)$r['username']).') | کشور: '.panel_h((string)$r['country']).' | کد: <b>'.$r['code'].'</b>';
+            if ($r['photo_file_id']) echo '<div>رسید: <code>'.panel_h($r['photo_file_id']).'</code></div>';
+            echo '<form method="post" style="display:inline-block;margin-top:8px"><input type="hidden" name="id" value="'.$r['id'].'" />';
+            echo '<button name="op" value="approve">✅ تایید</button> ';
             echo '<button name="op" value="reject">❌ رد</button>';
             echo '</form></div>';
         }
@@ -1383,6 +1601,25 @@ function handleMessage(array $message): void {
                 handleTransferTarget($user, $text);
                 return;
             }
+        } elseif ($state['state'] === 'await_points_receipt') {
+            if (!$hasPhoto) { sendMessage($user['telegram_id'], 'لطفاً فقط عکس رسید را ارسال کنید.'); return; }
+            $photos = $message['photo'];
+            $largest = end($photos);
+            $photoId = (string)$largest['file_id'];
+            $code = (string)$state['meta']['purchase_code'];
+            $pdo = db();
+            $stmt = $pdo->prepare('UPDATE point_purchases SET photo_file_id = ? WHERE code = ? AND user_id = ? AND status = "pending"');
+            $stmt->execute([$photoId, $code, $user['id']]);
+            clearUserState((int)$user['id']);
+            sendMessage($user['telegram_id'], 'لطفاً منتظر بمانید. درخواست شما ثبت شد. کد خرید: <b>'.$code.'</b>');
+            // Notify admin channel if configured
+            $country = getUserCountryName((int)($user['country_id'] ?? 0)) ?? 'بدون کشور';
+            $log = 'خرید امتیاز در انتظار:
+کاربر: '.$user['telegram_id'].' (@'.($user['username'] ?? '-').')
+کشور: '.$country.'
+کد: '.$code;
+            logToChannel($log, $photoId);
+            return;
         }
     }
 
@@ -1495,11 +1732,17 @@ function handleCallbackQuery(array $cb): void {
             case 'BUY_ITEM':
                 handleBuyItem($user, (int)($parts[1] ?? 0), $cb);
                 break;
+            case 'BUY_VIP_ITEM':
+                handleBuyVipItem($user, (int)($parts[1] ?? 0), $cb);
+                break;
             case 'VIP_BUY':
                 handleVipBuy($user, (int)($parts[1] ?? 0), null, $cb);
                 break;
             case 'VIP_BUY_POINTS':
                 handleVipBuy($user, null, (int)($parts[1] ?? 0), $cb);
+                break;
+            case 'BUY_POINTS':
+                startPointsPurchase($user, (int)($parts[1] ?? 0), $cb);
                 break;
             case 'TRANSFER':
                 startTransfer($user, (int)($parts[1] ?? 0), $cb);
