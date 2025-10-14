@@ -876,6 +876,23 @@ function handleMessage(array $message): void {
         return;
     }
 
+    if ($text === '/panel') {
+        // Only admins can receive panel link
+        if (!isAdmin($user)) {
+            sendMessage($user['telegram_id'], 'دسترسی به پنل مدیریت ندارید.');
+            return;
+        }
+        // Generate one-time token valid for 10 minutes
+        $token = bin2hex(random_bytes(32));
+        db()->prepare('INSERT INTO panel_tokens (token, user_id, created_at, expires_at) VALUES (?,?,?,?)')
+            ->execute([$token, $user['id'], now(), date('Y-m-d H:i:s', time() + 600)]);
+        $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'your-domain.com');
+        $url = $base . '/panel.php?action=login&token=' . urlencode($token);
+        sendMessage($user['telegram_id'], 'ورود یکبار مصرف به پنل مدیریت:
+<a href="' . htmlspecialchars($url) . '">باز کردن پنل</a>');
+        return;
+    }
+
     switch ($text) {
         case '🏳️ انتخاب کشور':
             sendMessage($user['telegram_id'], 'کشور خود را انتخاب کنید:', [ 'reply_markup' => countrySelectionKeyboard() ]);

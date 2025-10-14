@@ -212,6 +212,18 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Admin panel one-time tokens for login via /panel
+CREATE TABLE IF NOT EXISTS panel_tokens (
+  token VARCHAR(128) PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  CONSTRAINT fk_pt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_pt_user (user_id),
+  INDEX idx_pt_exp (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Seed data
 INSERT IGNORE INTO countries (id, name, type) VALUES
   (1, 'آلمان', 'free'),
