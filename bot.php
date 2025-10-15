@@ -1261,6 +1261,60 @@ function adminShowHome(array $user, ?int $messageId = null): void {
     }
 }
 
+function adminParsePipe(string $text): array {
+    $parts = array_map('trim', explode('|', $text));
+    return $parts;
+}
+
+function adminListShop(array $user, ?int $messageId = null): void {
+    $rows = db()->query('SELECT * FROM shop_categories ORDER BY type, sort_order, name')->fetchAll();
+    $lines = [];
+    foreach ($rows as $r) { $lines[] = ($r['is_active']?'✅':'⛔️')." ".$r['id'].' - '.($r['type']).' - '.$r['name']; }
+    $kb = [ [ ['text'=>'➕ افزودن دسته','callback_data'=>'ADMIN|CAT_ADD'] ] , [ ['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME'] ] ];
+    $text = 'دسته‌ها:\n'.( $lines ? implode("\n", $lines) : '—' ) . "\nبرای مدیریت، از دکمه‌های آیتم استفاده کنید.";
+    if ($messageId) editMessageText($user['telegram_id'], $messageId, $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    else sendMessage($user['telegram_id'], $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    // For brevity, also send per-category controls (first 5)
+    foreach (array_slice($rows,0,5) as $r) {
+        $kb2 = [ [ ['text'=>'✏️ ویرایش','callback_data'=>'ADMIN|CAT_EDIT|'.$r['id']], ['text'=>$r['is_active']?'⛔️ غیرفعال':'✅ فعال','callback_data'=>'ADMIN|CAT_TOG|'.$r['id']], ['text'=>'🗑 حذف','callback_data'=>'ADMIN|CAT_DEL|'.$r['id']] ], [ ['text'=>'➕ افزودن آیتم','callback_data'=>'ADMIN|ITEM_ADD|'.$r['id']], ['text'=>'📦 آیتم‌ها','callback_data'=>'ADMIN|ITEMS|'.$r['id']] ] ];
+        sendMessage($user['telegram_id'], 'دسته: '.$r['name'].' ('.$r['type'].')', ['reply_markup'=>['inline_keyboard'=>$kb2]]);
+    }
+}
+
+function adminListItems(array $user, int $catId): void {
+    $stmt = db()->prepare('SELECT i.* FROM items i WHERE i.category_id = ? ORDER BY i.sort_order, i.name');
+    $stmt->execute([$catId]);
+    $items = $stmt->fetchAll();
+    if (!$items) { sendMessage($user['telegram_id'], 'آیتمی ندارد.'); return; }
+    foreach ($items as $it) {
+        $kb = [ [ ['text'=>'✏️ ویرایش','callback_data'=>'ADMIN|ITEM_EDIT|'.$it['id']], ['text'=>$it['is_active']?'⛔️ غیرفعال':'✅ فعال','callback_data'=>'ADMIN|ITEM_TOG|'.$it['id']], ['text'=>'🗑 حذف','callback_data'=>'ADMIN|ITEM_DEL|'.$it['id']] ] ];
+        sendMessage($user['telegram_id'], 'آیتم: '.htmlspecialchars($it['name']).' #'.$it['id'], ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    }
+}
+
+function adminListFactories(array $user, ?int $messageId = null): void {
+    $rows = db()->query('SELECT * FROM factory_types ORDER BY name')->fetchAll();
+    $kb = [ [ ['text'=>'➕ افزودن کارخانه','callback_data'=>'ADMIN|FT_ADD'] ], [ ['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME'] ] ];
+    $txt = 'کارخانه‌ها: '.count($rows);
+    if ($messageId) editMessageText($user['telegram_id'], $messageId, $txt, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    else sendMessage($user['telegram_id'], $txt, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    foreach ($rows as $r) {
+        $kb2 = [ [ ['text'=>'✏️ ویرایش','callback_data'=>'ADMIN|FT_EDIT|'.$r['id']], ['text'=>$r['is_active']?'⛔️ غیرفعال':'✅ فعال','callback_data'=>'ADMIN|FT_TOG|'.$r['id']], ['text'=>'🗑 حذف','callback_data'=>'ADMIN|FT_DEL|'.$r['id']] ] ];
+        sendMessage($user['telegram_id'], '🏭 '.htmlspecialchars($r['name']).' #'.$r['id'], ['reply_markup'=>['inline_keyboard'=>$kb2]]);
+    }
+}
+
+function adminListMissions(array $user, ?int $messageId = null): void {
+    $rows = db()->query('SELECT * FROM missions ORDER BY id DESC')->fetchAll();
+    $kb = [ [ ['text'=>'➕ افزودن ماموریت','callback_data'=>'ADMIN|MS_ADD'] ], [ ['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME'] ] ];
+    $txt = 'ماموریت‌ها: '.count($rows);
+    if ($messageId) editMessageText($user['telegram_id'], $messageId, $txt, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    else sendMessage($user['telegram_id'], $txt, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    foreach ($rows as $r) {
+        $kb2 = [ [ ['text'=>'✏️ ویرایش','callback_data'=>'ADMIN|MS_EDIT|'.$r['id']], ['text'=>$r['is_active']?'⛔️ غیرفعال':'✅ فعال','callback_data'=>'ADMIN|MS_TOG|'.$r['id']], ['text'=>'🗑 حذف','callback_data'=>'ADMIN|MS_DEL|'.$r['id']] ] ];
+        sendMessage($user['telegram_id'], '🎯 '.htmlspecialchars($r['name']).' #'.$r['id'], ['reply_markup'=>['inline_keyboard'=>$kb2]]);
+    }
+}
 function adminListPointPackages(array $user, ?int $messageId = null): void {
     $rows = db()->query('SELECT id,name,points,price_toman,is_active FROM point_packages ORDER BY sort_order,id')->fetchAll();
     $lines = [];
@@ -1803,6 +1857,17 @@ function handleMessage(array $message): void {
 کد: '.$code;
             logToChannel($log, $photoId);
             return;
+        } elseif ($state['state'] === 'await_broadcast') {
+            if ($text === '') { sendMessage($user['telegram_id'], 'لطفاً متن پیام را ارسال کنید.'); return; }
+            // Simple broadcast: to all users
+            $stmt = db()->query('SELECT telegram_id FROM users');
+            while ($row = $stmt->fetch()) {
+                sendMessage((int)$row['telegram_id'], $text);
+                usleep(100000); // 0.1s to respect rate
+            }
+            clearUserState((int)$user['id']);
+            sendMessage($user['telegram_id'], 'پیام همگانی ارسال شد.');
+            return;
         }
     }
 
@@ -1897,6 +1962,42 @@ function handleCallbackQuery(array $cb): void {
                 }
                 if ($sub === 'PP') {
                     adminListPointPurchases($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'SHOP') {
+                    adminListShop($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'FACTORIES') {
+                    adminListFactories($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'QUESTIONS') {
+                    // Minimal: just count
+                    $cnt = (int)db()->query('SELECT COUNT(*) FROM questions')->fetchColumn();
+                    editMessageText($user['telegram_id'], $cb['message']['message_id'], 'تعداد سوالات: '.$cnt, ['reply_markup'=>['inline_keyboard'=>[[['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME']]]]]);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'SUBMISSIONS') {
+                    // Shortcut to pending count
+                    $cnt = (int)db()->query("SELECT COUNT(*) FROM submissions WHERE status='pending'")->fetchColumn();
+                    editMessageText($user['telegram_id'], $cb['message']['message_id'], 'ارسالی‌های در انتظار: '.$cnt, ['reply_markup'=>['inline_keyboard'=>[[['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME']]]]]);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'TRANSFERS') {
+                    $cnt = (int)db()->query("SELECT COUNT(*) FROM transfers WHERE status='pending'")->fetchColumn();
+                    editMessageText($user['telegram_id'], $cb['message']['message_id'], 'انتقالات در انتظار: '.$cnt, ['reply_markup'=>['inline_keyboard'=>[[['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME']]]]]);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'BROADCAST') {
+                    editMessageText($user['telegram_id'], $cb['message']['message_id'], 'متن پیام همگانی را به صورت معمول ارسال کنید.', ['reply_markup'=>['inline_keyboard'=>[[['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|HOME']]]]]);
+                    setUserState((int)$user['id'], 'await_broadcast');
                     answerCallback($cb['id'], '');
                     break;
                 }
