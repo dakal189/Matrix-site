@@ -831,6 +831,10 @@ function handleFactoryAction(array $user, string $action, int $userFactoryId, ar
         } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خطا در دریافت درآمد.'); return; }
         answerCallback($cb['id'], 'درآمد اضافه شد.');
         editMessageText($cb['message']['chat']['id'], $cb['message']['message_id'], '✅ ' . $income . ' امتیاز به حساب شما اضافه شد. کارخانه تا ۲۴ ساعت در استراحت است.');
+        // Log
+        $country = getUserCountryName((int)($user['country_id'] ?? 0)) ?? 'بدون کشور';
+        $log = '📈 دریافت درآمد کارخانه\nکاربر: '.$user['telegram_id'].' (@'.($user['username'] ?? '-').')\nکشور: '.$country.'\nمبلغ: '.$income.' امتیاز';
+        logToChannel($log, null);
         return;
     }
 }
@@ -1012,6 +1016,12 @@ function handleBuyItem(array $user, int $itemId, array $cb): void {
     } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); return; }
     answerCallback($cb['id'], 'خرید موفق بود.');
     sendMessage($user['telegram_id'], '✅ آیتم با موفقیت خریداری شد.');
+    // Log
+    $country = getUserCountryName((int)($user['country_id'] ?? 0)) ?? 'بدون کشور';
+    $pack = max(1, (int)($it['pack_size'] ?? 1));
+    $log = 'خرید عادی:\nکاربر: ' . $user['telegram_id'] . ' (@' . ($user['username'] ?? '-') . ')\n'
+         . 'آیتم: ' . $it['name'] . ' × ' . $pack . "\n" . 'مبلغ: ' . $price . ' پول بازی' . "\n" . 'کشور: ' . $country;
+    logToChannel($log, null);
 }
 
 function handleBuyVipItem(array $user, int $itemId, array $cb): void {
@@ -1078,6 +1088,12 @@ function handleBuyVipItem(array $user, int $itemId, array $cb): void {
     } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); return; }
     answerCallback($cb['id'], 'خرید VIP موفق بود.');
     sendMessage($user['telegram_id'], '✅ آیتم VIP با موفقیت خریداری شد.');
+    // Log
+    $country = getUserCountryName((int)($user['country_id'] ?? 0)) ?? 'بدون کشور';
+    $pack = max(1, (int)($it['pack_size'] ?? 1));
+    $log = 'خرید VIP:\nکاربر: ' . $user['telegram_id'] . ' (@' . ($user['username'] ?? '-') . ')\n'
+         . 'آیتم: ' . $it['name'] . ' × ' . $pack . "\n" . 'مبلغ: ' . $price . ' امتیاز' . "\n" . 'کشور: ' . $country;
+    logToChannel($log, null);
 }
 
 function handleVipBuy(array $user, ?int $itemId, ?int $pkgId, array $cb): void {
@@ -1636,6 +1652,11 @@ function serveAdminPanel(): void {
                 $status = $op === 'approve' ? 'approved' : 'rejected';
                 $pdo->prepare('UPDATE submissions SET status = ?, reviewed_at = ?, reviewed_by = ? WHERE id = ?')
                     ->execute([$status, now(), $_SESSION['admin_user_id'], $id]);
+                // Notify user
+                $tu = $pdo->prepare('SELECT u.telegram_id FROM submissions s JOIN users u ON u.id=s.user_id WHERE s.id = ?');
+                $tu->execute([$id]);
+                $tid = (int)($tu->fetchColumn() ?: 0);
+                if ($tid) sendMessage($tid, $status==='approved'?'✅ ارسالی شما تایید شد.':'❌ ارسالی شما رد شد.');
             }
         }
         $rows = $pdo->query("SELECT s.*, u.telegram_id, c.name AS country FROM submissions s JOIN users u ON u.id=s.user_id LEFT JOIN countries c ON c.id=s.country_id WHERE s.status='pending' ORDER BY s.created_at ASC LIMIT 50")->fetchAll();
@@ -1942,6 +1963,10 @@ function handleGroupReply(array $message): void {
     // Delete question message
     deleteMessage(GROUP_CHAT_ID, $replyToMsgId);
     db()->prepare('UPDATE question_posts SET deleted_at = ? WHERE id = ?')->execute([now(), $row['id']]);
+        // Log
+        $country = getUserCountryName((int)($user['country_id'] ?? 0)) ?? 'بدون کشور';
+        $log = '✅ پاسخ صحیح Q&A\nکاربر: '.$user['telegram_id'].' (@'.($user['username'] ?? '-').')\nکشور: '.$country.'\nجایزه: '.$reward.' امتیاز';
+        logToChannel($log, null);
 }
 
 // ===============================
