@@ -2206,8 +2206,62 @@ function handleCallbackQuery(array $cb): void {
                     answerCallback($cb['id'], '');
                     break;
                 }
-                if ($sub === 'PP' && ($parts[2] ?? '') === 'APPROVE') { answerCallback($cb['id'], ''); break; }
-                if ($sub === 'PP' && ($parts[2] ?? '') === 'REJECT') { answerCallback($cb['id'], ''); break; }
+                if ($sub === 'PP' && ($parts[2] ?? '') === 'APPROVE') {
+                    $ppId = (int)($parts[3] ?? 0);
+                    $pdo = db();
+                    $q = $pdo->prepare('SELECT pp.*, u.id AS uid, u.telegram_id, u.username, c.name AS country, pkg.points AS pkg_points, pkg.name AS pkg_name FROM point_purchases pp JOIN users u ON u.id=pp.user_id LEFT JOIN countries c ON c.id=u.country_id JOIN point_packages pkg ON pkg.id=pp.package_id WHERE pp.id = ? AND pp.status = "pending"');
+                    $q->execute([$ppId]);
+                    $row = $q->fetch();
+                    if ($row) {
+                        try {
+                            tx($pdo);
+                            $points = (int)$row['pkg_points'];
+                            $pdo->prepare('UPDATE users SET points = points + ? WHERE id = ?')->execute([$points, (int)$row['uid']]);
+                            $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
+                                ->execute([(int)$row['uid'], 'earn', $points, 'Points purchase code '.$row['code'], now()]);
+                            $pdo->prepare('UPDATE point_purchases SET status = "approved", decided_at = ?, decided_by = ? WHERE id = ?')
+                                ->execute([now(), (int)$user['id'], $ppId]);
+                            commit($pdo);
+                        } catch (Throwable $e) { rollback($pdo); }
+                        // Notify user
+                        sendMessage((int)$row['telegram_id'], '✅ خرید امتیاز تایید شد. کد: '.$row['code'].' | +'.$row['pkg_points'].' امتیاز');
+                        // Log to channel
+                        $log = '✅ تایید خرید امتیاز\n'
+                             . 'کاربر: '.$row['telegram_id'].' (@'.($row['username']??'-').')\n'
+                             . 'کشور: '.(($row['country']??'-')?:'-').'\n'
+                             . 'بسته: '.$row['pkg_name'].' ('.$row['pkg_points'].' امتیاز)\n'
+                             . 'کد: '.$row['code'];
+                        $photo = $row['photo_file_id'] ?: null;
+                        logToChannel($log, $photo);
+                    }
+                    adminListPointPurchases($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
+                if ($sub === 'PP' && ($parts[2] ?? '') === 'REJECT') {
+                    $ppId = (int)($parts[3] ?? 0);
+                    $pdo = db();
+                    $q = $pdo->prepare('SELECT pp.*, u.id AS uid, u.telegram_id, u.username, c.name AS country, pkg.points AS pkg_points, pkg.name AS pkg_name FROM point_purchases pp JOIN users u ON u.id=pp.user_id LEFT JOIN countries c ON c.id=u.country_id JOIN point_packages pkg ON pkg.id=pp.package_id WHERE pp.id = ? AND pp.status = "pending"');
+                    $q->execute([$ppId]);
+                    $row = $q->fetch();
+                    if ($row) {
+                        $pdo->prepare('UPDATE point_purchases SET status = "rejected", decided_at = ?, decided_by = ? WHERE id = ?')
+                            ->execute([now(), (int)$user['id'], $ppId]);
+                        // Notify user
+                        sendMessage((int)$row['telegram_id'], '❌ خرید امتیاز رد شد. کد: '.$row['code']);
+                        // Log to channel
+                        $log = '❌ رد خرید امتیاز\n'
+                             . 'کاربر: '.$row['telegram_id'].' (@'.($row['username']??'-').')\n'
+                             . 'کشور: '.(($row['country']??'-')?:'-').'\n'
+                             . 'بسته: '.$row['pkg_name'].' ('.$row['pkg_points'].' امتیاز)\n'
+                             . 'کد: '.$row['code'];
+                        $photo = $row['photo_file_id'] ?: null;
+                        logToChannel($log, $photo);
+                    }
+                    adminListPointPurchases($user, $cb['message']['message_id'] ?? null);
+                    answerCallback($cb['id'], '');
+                    break;
+                }
                 // Countries list placeholder
                 if ($sub === 'COUNTRIES') { adminListCountries($user, $cb['message']['message_id'] ?? null); answerCallback($cb['id'], ''); break; }
                 if ($sub === 'COUNTRY_ADD') { adminStartAddCountry($user); answerCallback($cb['id'], ''); break; }
