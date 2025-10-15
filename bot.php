@@ -1375,6 +1375,144 @@ function adminListCountries(array $user, ?int $messageId = null): void {
     if ($messageId) editMessageText($user['telegram_id'], $messageId, $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
     else sendMessage($user['telegram_id'], $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
 }
+
+function adminStartAddPackage(array $user): void {
+    setUserState((int)$user['id'], 'admin_pkg_add', ['step'=>1, 'pkg'=>[]]);
+    sendMessage($user['telegram_id'], 'افزودن بسته جدید - مرحله 1\nنام بسته را ارسال کنید:');
+}
+
+function adminHandleAddPackage(array $user, string $text): void {
+    $state = getUserState((int)$user['id']);
+    if (!$state || $state['state'] !== 'admin_pkg_add') return;
+    $step = (int)($state['meta']['step'] ?? 1);
+    $pkg = (array)($state['meta']['pkg'] ?? []);
+    if ($step === 1) {
+        if ($text === '') { sendMessage($user['telegram_id'], 'نام معتبر نیست.'); return; }
+        $pkg['name'] = $text;
+        setUserState((int)$user['id'], 'admin_pkg_add', ['step'=>2, 'pkg'=>$pkg]);
+        sendMessage($user['telegram_id'], 'مرحله 2\nتعداد امتیاز (عدد) را ارسال کنید:');
+        return;
+    }
+    if ($step === 2) {
+        if (!ctype_digit($text)) { sendMessage($user['telegram_id'], 'فقط عدد.'); return; }
+        $pkg['points'] = (int)$text;
+        setUserState((int)$user['id'], 'admin_pkg_add', ['step'=>3, 'pkg'=>$pkg]);
+        sendMessage($user['telegram_id'], 'مرحله 3\nقیمت (تومان) را ارسال کنید:');
+        return;
+    }
+    if ($step === 3) {
+        if (!ctype_digit($text)) { sendMessage($user['telegram_id'], 'فقط عدد.'); return; }
+        $pkg['price_toman'] = (int)$text;
+        setUserState((int)$user['id'], 'admin_pkg_add', ['step'=>4, 'pkg'=>$pkg]);
+        sendMessage($user['telegram_id'], 'مرحله 4\nترتیب نمایش (عدد - اختیاری، خالی=0):');
+        return;
+    }
+    if ($step === 4) {
+        $pkg['sort_order'] = $text === '' ? 0 : (int)$text;
+        setUserState((int)$user['id'], 'admin_pkg_add', ['step'=>5, 'pkg'=>$pkg]);
+        sendMessage($user['telegram_id'], 'مرحله 5\nفعال باشد؟ (1 بله / 0 خیر)');
+        return;
+    }
+    if ($step === 5) {
+        if (!in_array($text, ['0','1'], true)) { sendMessage($user['telegram_id'], '1 یا 0.'); return; }
+        $pkg['is_active'] = (int)$text;
+        $stmt = db()->prepare('INSERT INTO point_packages (name, points, price_toman, is_active, sort_order, created_at) VALUES (?,?,?,?,?,?)');
+        $stmt->execute([$pkg['name'], $pkg['points'], $pkg['price_toman'], $pkg['is_active'], (int)$pkg['sort_order'], now()]);
+        clearUserState((int)$user['id']);
+        sendMessage($user['telegram_id'], '✅ بسته ثبت شد.');
+        adminListPointPackages($user, null);
+        return;
+    }
+}
+
+function adminStartEditPackage(array $user, int $pkgId): void {
+    setUserState((int)$user['id'], 'admin_pkg_edit', ['pkg_id'=>$pkgId]);
+    sendMessage($user['telegram_id'], 'ویرایش بسته #'.$pkgId.'\nلطفاً به فرمت زیر ارسال کنید:\nنام|امتیاز|قیمت_تومان|ترتیب|فعال(1/0)\nبرای بدون تغییر از - استفاده کنید.');
+}
+
+function adminHandleEditPackage(array $user, string $text): void {
+    $state = getUserState((int)$user['id']);
+    if (!$state || $state['state'] !== 'admin_pkg_edit') return;
+    $pkgId = (int)$state['meta']['pkg_id'];
+    $parts = adminParsePipe($text);
+    if (count($parts) < 5) { sendMessage($user['telegram_id'], 'فرمت نامعتبر.'); return; }
+    list($name,$points,$price,$sort,$active) = $parts;
+    $row = db()->prepare('SELECT * FROM point_packages WHERE id = ?');
+    $row->execute([$pkgId]);
+    $cur = $row->fetch();
+    if (!$cur) { clearUserState((int)$user['id']); sendMessage($user['telegram_id'], 'بسته یافت نشد.'); return; }
+    $name = ($name==='-') ? $cur['name'] : $name;
+    $points = ($points==='-') ? $cur['points'] : (int)$points;
+    $price = ($price==='-') ? $cur['price_toman'] : (int)$price;
+    $sort = ($sort==='-') ? $cur['sort_order'] : (int)$sort;
+    $active = ($active==='-') ? $cur['is_active'] : (int)$active;
+    db()->prepare('UPDATE point_packages SET name=?, points=?, price_toman=?, sort_order=?, is_active=? WHERE id=?')->execute([$name,$points,$price,$sort,$active,$pkgId]);
+    clearUserState((int)$user['id']);
+    sendMessage($user['telegram_id'], '✅ بسته بروزرسانی شد.');
+    adminListPointPackages($user, null);
+}
+
+function adminStartAddCountry(array $user): void {
+    setUserState((int)$user['id'], 'admin_country_add', ['step'=>1, 'c'=>[]]);
+    sendMessage($user['telegram_id'], 'افزودن کشور - مرحله 1\nنام کشور را ارسال کنید:');
+}
+
+function adminHandleAddCountry(array $user, string $text): void {
+    $state = getUserState((int)$user['id']);
+    if (!$state || $state['state'] !== 'admin_country_add') return;
+    $step = (int)($state['meta']['step'] ?? 1);
+    $c = (array)($state['meta']['c'] ?? []);
+    if ($step === 1) {
+        if ($text==='') { sendMessage($user['telegram_id'], 'نام معتبر نیست.'); return; }
+        $c['name'] = $text;
+        setUserState((int)$user['id'], 'admin_country_add', ['step'=>2,'c'=>$c]);
+        sendMessage($user['telegram_id'], 'مرحله 2\nنوع کشور (free/vip) را ارسال کنید:');
+        return;
+    }
+    if ($step === 2) {
+        $t = strtolower($text);
+        if (!in_array($t, ['free','vip'], true)) { sendMessage($user['telegram_id'], 'فقط free یا vip'); return; }
+        $c['type'] = $t;
+        setUserState((int)$user['id'], 'admin_country_add', ['step'=>3,'c'=>$c]);
+        sendMessage($user['telegram_id'], 'مرحله 3\nاستارتر پول بازی (عدد):');
+        return;
+    }
+    if ($step === 3) {
+        if ($text!=='' && !ctype_digit($text)) { sendMessage($user['telegram_id'], 'فقط عدد.'); return; }
+        $c['starter_money'] = ($text==='')?0:(int)$text;
+        setUserState((int)$user['id'], 'admin_country_add', ['step'=>4,'c'=>$c]);
+        sendMessage($user['telegram_id'], 'مرحله 4\nاستارتر امتیاز (عدد):');
+        return;
+    }
+    if ($step === 4) {
+        if ($text!=='' && !ctype_digit($text)) { sendMessage($user['telegram_id'], 'فقط عدد.'); return; }
+        $c['starter_points'] = ($text==='')?0:(int)$text;
+        db()->prepare('INSERT INTO countries (name,type,is_active,created_at,starter_money,starter_points) VALUES (?,?,1,?,?,?)')
+            ->execute([$c['name'],$c['type'], now(), $c['starter_money'],$c['starter_points']]);
+        clearUserState((int)$user['id']);
+        sendMessage($user['telegram_id'], '✅ کشور ایجاد شد.');
+        adminListCountries($user, null);
+        return;
+    }
+}
+
+function adminCountryConfigPanel(array $user, int $countryId): void {
+    $stmt = db()->prepare('SELECT id,name,type,starter_money,starter_points,settings FROM countries WHERE id = ?');
+    $stmt->execute([$countryId]);
+    $c = $stmt->fetch();
+    if (!$c) { sendMessage($user['telegram_id'], 'کشور یافت نشد.'); return; }
+    $s = $c['settings'] ? json_decode((string)$c['settings'], true) : [];
+    if (!is_array($s)) $s = [];
+    $s += ['allow_shop_normal'=>true,'allow_shop_vip'=>true,'allow_factory_purchase'=>true];
+    $text = 'کشور: '.$c['name'].' ('.$c['type'].")\nSM: ".$c['starter_money'].' SP: '.$c['starter_points'];
+    $kb = [
+        [ ['text'=>($s['allow_shop_normal']?'✅':'⛔️').' عادی','callback_data'=>'ADMIN|COUNTRY_TOG|'.$c['id'].'|allow_shop_normal'], ['text'=>($s['allow_shop_vip']?'✅':'⛔️').' VIP','callback_data'=>'ADMIN|COUNTRY_TOG|'.$c['id'].'|allow_shop_vip'] ],
+        [ ['text'=>($s['allow_factory_purchase']?'✅':'⛔️').' خرید کارخانه','callback_data'=>'ADMIN|COUNTRY_TOG|'.$c['id'].'|allow_factory_purchase'] ],
+        [ ['text'=>'✏️ استارتر پول','callback_data'=>'ADMIN|COUNTRY_SET_SM|'.$c['id']], ['text'=>'✏️ استارتر امتیاز','callback_data'=>'ADMIN|COUNTRY_SET_SP|'.$c['id']] ],
+        [ ['text'=>'⬅️ بازگشت','callback_data'=>'ADMIN|COUNTRIES'] ]
+    ];
+    sendMessage($user['telegram_id'], $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+}
 // ===============================
 // ADMIN PANEL (SINGLE-FILE, VIA GET action=...)
 // ===============================
@@ -1876,6 +2014,36 @@ function handleMessage(array $message): void {
             clearUserState((int)$user['id']);
             sendMessage($user['telegram_id'], 'پیام همگانی ارسال شد.');
             return;
+        } elseif ($state['state'] === 'admin_pkg_add') {
+            adminHandleAddPackage($user, $text);
+            return;
+        } elseif ($state['state'] === 'admin_pkg_edit') {
+            adminHandleEditPackage($user, $text);
+            return;
+        } elseif ($state['state'] === 'admin_country_add') {
+            adminHandleAddCountry($user, $text);
+            return;
+        } elseif ($state['state'] === 'admin_country_cfg_id') {
+            if (!ctype_digit($text)) { sendMessage($user['telegram_id'],'فقط عدد شناسه کشور.'); return; }
+            clearUserState((int)$user['id']);
+            adminCountryConfigPanel($user, (int)$text);
+            return;
+        } elseif ($state['state'] === 'admin_country_set_sm') {
+            $cid = (int)($state['meta']['country_id'] ?? 0);
+            if (!ctype_digit($text)) { sendMessage($user['telegram_id'],'فقط عدد.'); return; }
+            db()->prepare('UPDATE countries SET starter_money = ? WHERE id = ?')->execute([(int)$text, $cid]);
+            clearUserState((int)$user['id']);
+            sendMessage($user['telegram_id'], 'ذخیره شد.');
+            adminCountryConfigPanel($user, $cid);
+            return;
+        } elseif ($state['state'] === 'admin_country_set_sp') {
+            $cid = (int)($state['meta']['country_id'] ?? 0);
+            if (!ctype_digit($text)) { sendMessage($user['telegram_id'],'فقط عدد.'); return; }
+            db()->prepare('UPDATE countries SET starter_points = ? WHERE id = ?')->execute([(int)$text, $cid]);
+            clearUserState((int)$user['id']);
+            sendMessage($user['telegram_id'], 'ذخیره شد.');
+            adminCountryConfigPanel($user, $cid);
+            return;
         }
     }
 
@@ -1968,6 +2136,10 @@ function handleCallbackQuery(array $cb): void {
                     answerCallback($cb['id'], '');
                     break;
                 }
+                if ($sub === 'PPKGS_ADD') { adminStartAddPackage($user); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'PPKG_EDIT') { adminStartEditPackage($user, (int)($parts[2] ?? 0)); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'PPKG_TOG') { db()->prepare('UPDATE point_packages SET is_active = 1 - is_active WHERE id = ?')->execute([(int)($parts[2] ?? 0)]); adminListPointPackages($user, $cb['message']['message_id'] ?? null); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'PPKG_DEL') { db()->prepare('DELETE FROM point_packages WHERE id = ?')->execute([(int)($parts[2] ?? 0)]); adminListPointPackages($user, $cb['message']['message_id'] ?? null); answerCallback($cb['id'], ''); break; }
                 if ($sub === 'PP') {
                     adminListPointPurchases($user, $cb['message']['message_id'] ?? null);
                     answerCallback($cb['id'], '');
@@ -2013,6 +2185,11 @@ function handleCallbackQuery(array $cb): void {
                 if ($sub === 'PP' && ($parts[2] ?? '') === 'REJECT') { answerCallback($cb['id'], ''); break; }
                 // Countries list placeholder
                 if ($sub === 'COUNTRIES') { adminListCountries($user, $cb['message']['message_id'] ?? null); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'COUNTRY_ADD') { adminStartAddCountry($user); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'COUNTRY_CFG_PROMPT') { sendMessage($user['telegram_id'], 'شناسه کشور را ارسال کنید:'); setUserState((int)$user['id'], 'admin_country_cfg_id'); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'COUNTRY_TOG') { $cid=(int)($parts[2]??0); $key=(string)($parts[3]??''); $stmt=db()->prepare('SELECT settings FROM countries WHERE id = ?'); $stmt->execute([$cid]); $cur=$stmt->fetchColumn(); $s=$cur?json_decode((string)$cur,true):[]; if(!is_array($s))$s=[]; $s[$key]=empty($s[$key]); db()->prepare('UPDATE countries SET settings = ? WHERE id = ?')->execute([json_encode($s,JSON_UNESCAPED_UNICODE),$cid]); adminCountryConfigPanel($user,$cid); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'COUNTRY_SET_SM') { $cid=(int)($parts[2]??0); setUserState((int)$user['id'],'admin_country_set_sm',['country_id'=>$cid]); sendMessage($user['telegram_id'],'مقدار جدید استارتر پول بازی را ارسال کنید:'); answerCallback($cb['id'], ''); break; }
+                if ($sub === 'COUNTRY_SET_SP') { $cid=(int)($parts[2]??0); setUserState((int)$user['id'],'admin_country_set_sp',['country_id'=>$cid]); sendMessage($user['telegram_id'],'مقدار جدید استارتر امتیاز را ارسال کنید:'); answerCallback($cb['id'], ''); break; }
                 // Not implemented actions fallback
                 answerCallback($cb['id'], '');
                 break;
