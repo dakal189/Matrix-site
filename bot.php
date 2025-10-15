@@ -472,6 +472,55 @@ function logToChannel(string $text, ?string $photoFileId = null): void {
     }
 }
 
+// Country feature settings
+function getCountrySettings(int $countryId): array {
+    if ($countryId <= 0) return [
+        'allow_factory_purchase' => true,
+        'allow_shop_normal' => true,
+        'allow_shop_vip' => true,
+    ];
+    $stmt = db()->prepare('SELECT settings FROM countries WHERE id = ?');
+    $stmt->execute([$countryId]);
+    $json = (string)($stmt->fetchColumn() ?: '');
+    $arr = $json ? json_decode($json, true) : [];
+    if (!is_array($arr)) $arr = [];
+    $arr += [
+        'allow_factory_purchase' => true,
+        'allow_shop_normal' => true,
+        'allow_shop_vip' => true,
+    ];
+    return $arr;
+}
+
+function isItemBlockedForCountry(?int $countryId, int $itemId): bool {
+    if (!$countryId) return false;
+    $stmt = db()->prepare('SELECT blocked FROM country_item_blocks WHERE country_id = ? AND item_id = ?');
+    $stmt->execute([$countryId, $itemId]);
+    $v = $stmt->fetchColumn();
+    return (int)$v === 1;
+}
+
+// Missions progress updater (buy_shop)
+function updateBuyShopMissions(int $userId, string $shopType): void {
+    $stmt = db()->prepare("SELECT id, required_count FROM missions WHERE is_active = 1 AND type = 'buy_shop' AND (shop_type = ? OR shop_type IS NULL)");
+    $stmt->execute([$shopType]);
+    $missions = $stmt->fetchAll();
+    if (!$missions) return;
+    $pdo = db();
+    foreach ($missions as $m) {
+        $pdo->prepare('INSERT INTO user_missions (mission_id, user_id, progress_count) VALUES (?,?,1) ON DUPLICATE KEY UPDATE progress_count = progress_count + 1')
+            ->execute([$m['id'], $userId]);
+    }
+}
+
+// Factory helpers for flexible schema
+function ftBasePrice(array $ft): int { return isset($ft['base_price']) ? (int)$ft['base_price'] : (int)($ft['base_price_points'] ?? 0); }
+function ftPriceCurrency(array $ft): string { return $ft['price_currency'] ?? 'points'; }
+function ftBaseIncome(array $ft): int { return isset($ft['base_income']) ? (int)$ft['base_income'] : (int)($ft['base_income_points'] ?? 0); }
+function ftIncomeCurrency(array $ft): string { return $ft['income_currency'] ?? 'points'; }
+function ftPayoutIntervalHours(array $ft): int { return (int)($ft['payout_interval_hours'] ?? 24); }
+function ftUpgradeBaseMinutes(array $ft): int { return (int)($ft['upgrade_base_minutes'] ?? 60); }
+
 // ===============================
 // USER MODEL
 // ===============================
@@ -870,6 +919,8 @@ function listShopItems(array $user, string $shopType, int $categoryId): void {
         $desc = $it['description'] ?: '';
         $isVip = (int)$it['is_vip'] === 1 || $shopType === 'vip';
         // Normal shop uses game money; VIP uses points
+        // skip blocked items per country
+        if (isItemBlockedForCountry((int)($user['country_id'] ?? 0), (int)$it['id'])) continue;
         $priceTxt = $isVip ? ((int)$it['price_points'] . ' امتیاز') : ((int)($it['price_money'] ?? 0) . ' پول بازی');
         $text = '<b>' . htmlspecialchars($name) . '</b>\n' . htmlspecialchars($desc) . "\nقیمت: <b>{$priceTxt}</b>";
         if ($isVip) {
@@ -897,6 +948,22 @@ function handleBuyItem(array $user, int $itemId, array $cb): void {
         $u = $pdo->prepare('SELECT * FROM users WHERE id = ? FOR UPDATE');
         $u->execute([$user['id']]);
         $usr = $u->fetch();
+        // Limits check
+        $limit = (int)($it['per_user_limit'] ?? 0);
+        if ($limit > 0) {
+            $owned = $pdo->prepare('SELECT COALESCE(SUM(quantity),0) FROM user_items WHERE user_id = ? AND item_id = ?');
+            $owned->execute([$user['id'], $itemId]);
+            $cur = (int)$owned->fetchColumn();
+            if ($cur >= $limit) { rollback($pdo); answerCallback($cb['id'], 'به حداکثر خرید مجاز برای این آیتم رسیده‌اید.'); return; }
+        }
+        $daily = (int)($it['per_user_daily_limit'] ?? 0);
+        if ($daily > 0) {
+            $dailyQ = $pdo->prepare('SELECT COALESCE(SUM(quantity),0) FROM item_purchases WHERE user_id = ? AND item_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)');
+            $dailyQ->execute([$user['id'], $itemId]);
+            $d = (int)$dailyQ->fetchColumn();
+            if ($d >= $daily) { rollback($pdo); answerCallback($cb['id'], 'به محدودیت روزانه خرید این آیتم رسیده‌اید.'); return; }
+        }
+
         if ((int)$usr['money'] < $price) { rollback($pdo); answerCallback($cb['id'], 'پول بازی کافی نیست.'); return; }
         $pdo->prepare('UPDATE users SET money = money - ? WHERE id = ?')->execute([$price, $user['id']]);
         $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, amount_money, description, created_at) VALUES (?,?,?,?,?,?)')
@@ -930,6 +997,8 @@ function handleBuyItem(array $user, int $itemId, array $cb): void {
         // Log purchase for daily limits
         $pdo->prepare('INSERT INTO item_purchases (user_id, item_id, quantity, created_at) VALUES (?,?,?,?)')
             ->execute([$user['id'], $itemId, max(1, (int)($it['pack_size'] ?? 1)), now()]);
+        // Missions
+        updateBuyShopMissions((int)$user['id'], 'normal');
         commit($pdo);
     } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); return; }
     answerCallback($cb['id'], 'خرید موفق بود.');
@@ -950,6 +1019,21 @@ function handleBuyVipItem(array $user, int $itemId, array $cb): void {
         $u = $pdo->prepare('SELECT * FROM users WHERE id = ? FOR UPDATE');
         $u->execute([$user['id']]);
         $usr = $u->fetch();
+        // Limits check (VIP uses same fields)
+        $limit = (int)($it['per_user_limit'] ?? 0);
+        if ($limit > 0) {
+            $owned = $pdo->prepare('SELECT COALESCE(SUM(quantity),0) FROM user_items WHERE user_id = ? AND item_id = ?');
+            $owned->execute([$user['id'], $itemId]);
+            $cur = (int)$owned->fetchColumn();
+            if ($cur >= $limit) { rollback($pdo); answerCallback($cb['id'], 'به حداکثر خرید مجاز این آیتم رسیده‌اید.'); return; }
+        }
+        $daily = (int)($it['per_user_daily_limit'] ?? 0);
+        if ($daily > 0) {
+            $dailyQ = $pdo->prepare('SELECT COALESCE(SUM(quantity),0) FROM item_purchases WHERE user_id = ? AND item_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)');
+            $dailyQ->execute([$user['id'], $itemId]);
+            $d = (int)$dailyQ->fetchColumn();
+            if ($d >= $daily) { rollback($pdo); answerCallback($cb['id'], 'به محدودیت روزانه خرید این آیتم رسیده‌اید.'); return; }
+        }
         if ((int)$usr['points'] < $price) { rollback($pdo); answerCallback($cb['id'], 'امتیاز کافی نیست.'); return; }
         $pdo->prepare('UPDATE users SET points = points - ? WHERE id = ?')->execute([$price, $user['id']]);
         $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
@@ -979,6 +1063,8 @@ function handleBuyVipItem(array $user, int $itemId, array $cb): void {
                     ->execute([$user['id'], $itemId, $pack, now()]);
             }
         }
+        // Missions
+        updateBuyShopMissions((int)$user['id'], 'vip');
         commit($pdo);
     } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); return; }
     answerCallback($cb['id'], 'خرید VIP موفق بود.');
