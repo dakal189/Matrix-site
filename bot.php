@@ -1326,6 +1326,14 @@ function adminListPointPackages(array $user, ?int $messageId = null): void {
     ];
     if ($messageId) editMessageText($user['telegram_id'], $messageId, $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
     else sendMessage($user['telegram_id'], $text, ['reply_markup'=>['inline_keyboard'=>$kb]]);
+    foreach (array_slice($rows,0,10) as $r) {
+        $kb2 = [ [
+            ['text'=>'✏️ ویرایش','callback_data'=>'ADMIN|PPKG_EDIT|'.$r['id']],
+            ['text'=>$r['is_active']?'⛔️ غیرفعال':'✅ فعال','callback_data'=>'ADMIN|PPKG_TOG|'.$r['id']],
+            ['text'=>'🗑 حذف','callback_data'=>'ADMIN|PPKG_DEL|'.$r['id']]
+        ] ];
+        sendMessage($user['telegram_id'], 'بسته: '.htmlspecialchars($r['name']).' #'.$r['id'], ['reply_markup'=>['inline_keyboard'=>$kb2]]);
+    }
 }
 
 function adminListPointPurchases(array $user, ?int $messageId = null): void {
