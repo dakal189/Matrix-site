@@ -713,21 +713,23 @@ function listUserFactories(array $user): void {
     $rows = $stmt->fetchAll();
 
     if (!$rows) {
-        sendMessage($user['telegram_id'], "شما هیچ کارخانه‌ای ندارید.\nبرای خرید، به <b>فروشگاه عادی</b> بروید و مجوز کارخانه را تهیه کنید.");
+        $kb = [ [ ['text'=>'🛒 خرید کارخانه','callback_data'=>'FACTORY_BUY_LIST'] ] ];
+        sendMessage($user['telegram_id'], "شما هیچ کارخانه‌ای ندارید.", [ 'reply_markup' => ['inline_keyboard'=>$kb] ]);
         return;
     }
 
     foreach ($rows as $r) {
         $name = $r['name'];
         $level = (int)$r['level'];
-        $income = calcIncome((int)$r['base_income_points'], $level);
-        $basePrice = (int)$r['base_price_points'];
+        $income = calcIncome(ftBaseIncome($r), $level);
+        $basePrice = ftBasePrice($r);
         $maxLevel = (int)$r['max_level'];
         $upgradingUntil = $r['upgrading_until'] ? strtotime($r['upgrading_until']) : null;
         $cooldownUntil = $r['cooldown_until'] ? strtotime($r['cooldown_until']) : null;
 
+        $incomeUnit = (ftIncomeCurrency($r) === 'money') ? 'پول بازی' : 'امتیاز';
         $text = "🏭 <b>{$name}</b> - سطح <b>{$level}</b>\n" .
-                "درآمد: <b>{$income}</b> امتیاز";
+                "درآمد: <b>{$income}</b> {$incomeUnit}";
 
         $buttons = [];
         if ($upgradingUntil && $upgradingUntil > time()) {
@@ -737,7 +739,8 @@ function listUserFactories(array $user): void {
             $buttons[] = [['text' => '🔝 حداکثر سطح', 'callback_data' => 'NOOP']];
         } else {
             $nextCost = calcUpgradeCost($basePrice, $level);
-            $buttons[] = [['text' => "⬆️ ارتقا به سطح " . ($level+1) . " (" . $nextCost . " امتیاز)", 'callback_data' => 'FACTORY_UPGRADE|' . $r['uf_id'] ]];
+            $costUnit = (ftPriceCurrency($r) === 'money') ? 'پول' : 'امتیاز';
+            $buttons[] = [['text' => "⬆️ ارتقا به سطح " . ($level+1) . " (" . $nextCost . " " . $costUnit . ")", 'callback_data' => 'FACTORY_UPGRADE|' . $r['uf_id'] ]];
         }
 
         if ($cooldownUntil && $cooldownUntil > time()) {
@@ -747,6 +750,7 @@ function listUserFactories(array $user): void {
             $buttons[] = [['text' => '💰 دریافت درآمد: ' . $income, 'callback_data' => 'FACTORY_COLLECT|' . $r['uf_id'] ]];
         }
 
+        $buttons[] = [['text'=>'🛒 خرید کارخانه','callback_data'=>'FACTORY_BUY_LIST']];
         sendMessage($user['telegram_id'], $text, [ 'reply_markup' => ['inline_keyboard' => $buttons] ]);
     }
 }
@@ -898,6 +902,11 @@ function saveSubmission(array $user, string $type, ?string $text, ?string $photo
 // SHOPS
 // ===============================
 function listShopCategories(array $user, string $shopType): void {
+    // Country-based gating
+    $settings = getCountrySettings((int)($user['country_id'] ?? 0));
+    if ($shopType === 'normal' && empty($settings['allow_shop_normal'])) { sendMessage($user['telegram_id'], 'این بخش برای کشور شما غیرفعال است.'); return; }
+    if ($shopType === 'vip' && empty($settings['allow_shop_vip'])) { sendMessage($user['telegram_id'], 'این بخش برای کشور شما غیرفعال است.'); return; }
+
     $stmt = db()->prepare('SELECT id, name FROM shop_categories WHERE type = ? AND is_active = 1 ORDER BY sort_order, name');
     $stmt->execute([$shopType]);
     $rows = $stmt->fetchAll();
@@ -1202,13 +1211,24 @@ function listActiveCountries(array $user): void {
 // ===============================
 // EVENTS LIST
 // ===============================
-function listEvents(array $user): void {
-    $stmt = db()->query('SELECT title, description FROM events WHERE is_active = 1 ORDER BY id DESC LIMIT 20');
-    $rows = $stmt->fetchAll();
-    if (!$rows) { sendMessage($user['telegram_id'], 'ایونت فعالی وجود ندارد.'); return; }
-    foreach ($rows as $e) {
-        $text = '💎 <b>' . htmlspecialchars($e['title']) . '</b>\n' . htmlspecialchars((string)$e['description']);
-        sendMessage($user['telegram_id'], $text);
+function showMissionsForUser(array $user): void {
+    $missions = db()->query("SELECT * FROM missions WHERE is_active = 1 ORDER BY id DESC LIMIT 50")->fetchAll();
+    if (!$missions) { sendMessage($user['telegram_id'], 'ایونت/ماموریت فعالی وجود ندارد.'); return; }
+    foreach ($missions as $m) {
+        $um = db()->prepare('SELECT progress_count, claimed_at FROM user_missions WHERE mission_id = ? AND user_id = ?');
+        $um->execute([$m['id'], $user['id']]);
+        $row = $um->fetch();
+        $progress = (int)($row['progress_count'] ?? 0);
+        $claimed = !empty($row['claimed_at']);
+        $need = (int)$m['required_count'];
+        $shop = ($m['shop_type'] === 'vip') ? 'خرید از شاپ VIP' : 'خرید از شاپ عادی';
+        $reward = (string)$m['reward_amount'] . ' ' . (($m['reward_type'] === 'money') ? 'پول بازی' : 'امتیاز');
+        $text = '🎯 ' . htmlspecialchars($m['name']) . "\n" . $shop . ' × ' . $need . "\nپیشرفت: <b>{$progress}/{$need}</b>\nجایزه: <b>{$reward}</b>';
+        $btns = [];
+        if (!$claimed && $progress >= $need) {
+            $btns[] = [ ['text'=>'🎁 دریافت جایزه','callback_data'=>'MISSION_CLAIM|'.$m['id']] ];
+        }
+        sendMessage($user['telegram_id'], $text, [ 'reply_markup' => ['inline_keyboard' => $btns] ]);
     }
 }
 
@@ -1823,7 +1843,7 @@ function handleMessage(array $message): void {
             listPointPackages($user);
             return;
         case '💎 لیست ایونت‌ها':
-            listEvents($user);
+            showMissionsForUser($user);
             return;
         case '🪪 لیست کشورهای فعال':
             listActiveCountries($user);
@@ -1899,6 +1919,55 @@ function handleCallbackQuery(array $cb): void {
             case 'FACTORY_COLLECT':
                 handleFactoryAction($user, $action, (int)($parts[1] ?? 0), $cb);
                 break;
+            case 'FACTORY_BUY_LIST':
+                // Show purchasable factories list based on country settings and currency
+                $rows = db()->query('SELECT * FROM factory_types WHERE is_active = 1 ORDER BY name')->fetchAll();
+                if (!$rows) { answerCallback($cb['id'], 'موردی نیست'); break; }
+                foreach ($rows as $ft) {
+                    $price = ftBasePrice($ft);
+                    $unit = (ftPriceCurrency($ft) === 'money') ? 'پول بازی' : 'امتیاز';
+                    $btn = [ [ ['text'=>'🛒 خرید - '.$price.' '.$unit, 'callback_data'=>'FACTORY_BUY|'.$ft['id'] ] ] ];
+                    sendMessage($user['telegram_id'], '🏭 '.htmlspecialchars($ft['name'])."\nقیمت پایه: <b>{$price}</b> {$unit}", [ 'reply_markup'=>['inline_keyboard'=>$btn] ]);
+                }
+                answerCallback($cb['id'], '');
+                break;
+            case 'FACTORY_BUY':
+                // Attempt to purchase factory type
+                $ftId = (int)($parts[1] ?? 0);
+                $stmt = db()->prepare('SELECT * FROM factory_types WHERE id = ? AND is_active = 1');
+                $stmt->execute([$ftId]);
+                $ft = $stmt->fetch();
+                if (!$ft) { answerCallback($cb['id'], 'یافت نشد'); break; }
+                $price = ftBasePrice($ft);
+                $cur = ftPriceCurrency($ft);
+                $pdo = db();
+                try {
+                    tx($pdo);
+                    $u = $pdo->prepare('SELECT * FROM users WHERE id = ? FOR UPDATE');
+                    $u->execute([$user['id']]);
+                    $usr = $u->fetch();
+                    // already owned?
+                    $ex = $pdo->prepare('SELECT id FROM user_factories WHERE user_id = ? AND factory_type_id = ?');
+                    $ex->execute([$user['id'], $ftId]);
+                    if ($ex->fetch()) { rollback($pdo); answerCallback($cb['id'], 'قبلاً خریداری شده است.'); break; }
+                    if ($cur === 'money') {
+                        if ((int)$usr['money'] < $price) { rollback($pdo); answerCallback($cb['id'], 'پول بازی کافی نیست.'); break; }
+                        $pdo->prepare('UPDATE users SET money = money - ? WHERE id = ?')->execute([$price, $user['id']]);
+                        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, amount_money, description, created_at) VALUES (?,?,?,?,?,?)')
+                            ->execute([$user['id'], 'spend', 0, -$price, 'Buy factory: '.$ft['name'], now()]);
+                    } else {
+                        if ((int)$usr['points'] < $price) { rollback($pdo); answerCallback($cb['id'], 'امتیاز کافی نیست.'); break; }
+                        $pdo->prepare('UPDATE users SET points = points - ? WHERE id = ?')->execute([$price, $user['id']]);
+                        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
+                            ->execute([$user['id'], 'spend', -$price, 'Buy factory: '.$ft['name'], now()]);
+                    }
+                    $pdo->prepare('INSERT INTO user_factories (user_id, factory_type_id, level, created_at) VALUES (?,?,1,?)')
+                        ->execute([$user['id'], $ftId, now()]);
+                    commit($pdo);
+                } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خرید ناموفق بود.'); break; }
+                answerCallback($cb['id'], 'خرید انجام شد.');
+                sendMessage($user['telegram_id'], '✅ کارخانه با موفقیت خریداری شد.');
+                break;
             case 'PLAY':
                 handlePlayCallback($user, (string)($parts[1] ?? ''), $cb);
                 break;
@@ -1923,6 +1992,36 @@ function handleCallbackQuery(array $cb): void {
                 break;
             case 'TRANSFER':
                 startTransfer($user, (int)($parts[1] ?? 0), $cb);
+                break;
+            case 'MISSION_CLAIM':
+                $missionId = (int)($parts[1] ?? 0);
+                $pdo = db();
+                // Check eligibility
+                $m = $pdo->prepare('SELECT * FROM missions WHERE id = ? AND is_active = 1');
+                $m->execute([$missionId]);
+                $mission = $m->fetch();
+                if (!$mission) { answerCallback($cb['id'], 'نامعتبر'); break; }
+                $um = $pdo->prepare('SELECT progress_count, claimed_at FROM user_missions WHERE mission_id = ? AND user_id = ?');
+                $um->execute([$missionId, $user['id']]);
+                $row = $um->fetch();
+                if (!$row || (int)$row['progress_count'] < (int)$mission['required_count'] || !empty($row['claimed_at'])) { answerCallback($cb['id'], 'نامعتبر'); break; }
+                try {
+                    tx($pdo);
+                    if ($mission['reward_type'] === 'money') {
+                        $pdo->prepare('UPDATE users SET money = money + ? WHERE id = ?')->execute([(int)$mission['reward_amount'], $user['id']]);
+                        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_money, description, created_at) VALUES (?,?,?,?,?)')
+                            ->execute([$user['id'], 'reward', (int)$mission['reward_amount'], 'Mission reward: '.$mission['name'], now()]);
+                    } else {
+                        $pdo->prepare('UPDATE users SET points = points + ? WHERE id = ?')->execute([(int)$mission['reward_amount'], $user['id']]);
+                        $pdo->prepare('INSERT INTO transactions (user_id, type, amount_points, description, created_at) VALUES (?,?,?,?,?)')
+                            ->execute([$user['id'], 'reward', (int)$mission['reward_amount'], 'Mission reward: '.$mission['name'], now()]);
+                    }
+                    $pdo->prepare('UPDATE user_missions SET claimed_at = ? WHERE mission_id = ? AND user_id = ?')
+                        ->execute([now(), $missionId, $user['id']]);
+                    commit($pdo);
+                } catch (Throwable $e) { rollback($pdo); answerCallback($cb['id'], 'خطا'); break; }
+                answerCallback($cb['id'], 'جایزه دریافت شد.');
+                sendMessage($user['telegram_id'], '🎁 جایزه ماموریت به حساب شما واریز شد.');
                 break;
             default:
                 answerCallback($cb['id'], 'درخواست نامعتبر');
