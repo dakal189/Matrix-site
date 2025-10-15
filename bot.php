@@ -23,27 +23,27 @@ declare(strict_types=1);
 // CONFIGURATION (EDIT THESE)
 // ===============================
 // Telegram bot token
-const BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_HERE'; // e.g., 123456:ABC...
+const BOT_TOKEN = '8259992553:AAFGEeyyozoxHVHAbR_7gpSjULrL79M0Lho';
 
 // Admin numeric user ID and username
-const ADMIN_ID = 123456789; // Change to your Telegram numeric ID
-const ADMIN_USERNAME = 'ADMIN_USERNAME'; // without @
+const ADMIN_ID = 5641303137;
+const ADMIN_USERNAME = 'Dakal1'; // without @
 
 // Group chat ID for Q&A (negative for supergroups)
-const GROUP_CHAT_ID = -1001234567890; // e.g., -100xxxxxxxxxx
+const GROUP_CHAT_ID = -1002798392543;
 
 // Optional log channel/chat for purchase logs (0 = disabled)
-const LOG_CHANNEL_ID = 0; // e.g., -1009876543210 to enable
+const LOG_CHANNEL_ID = -1002798392543; // same channel for Q&A and purchase logs
 
 // Maintenance mode (true = users see maintenance message; admin bypasses)
 const MAINTENANCE = false;
 
 // Database connection
-const DB_HOST = '127.0.0.1';
+const DB_HOST = 'localhost';
 const DB_PORT = 3306;
-const DB_NAME = 'telegram_game';
-const DB_USER = 'root';
-const DB_PASS = '';
+const DB_NAME = 'dakallli_Test2';
+const DB_USER = 'dakallli_Test2';
+const DB_PASS = 'hosyarww123';
 
 // Timezone
 date_default_timezone_set('Asia/Tehran');
